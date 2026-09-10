@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Annual shading sweep — WebGPU</title>
+<style>
+  :root {
+    --bg: #0d1013;
+    --panel: #14181d;
+    --panel-2: #1a1f26;
+    --line: #262d36;
+    --text: #dfe4e8;
+    --muted: #8b959e;
+    --accent: #4ec9b0;
+    --warn: #e0a54e;
+    --bad: #e0705f;
+    --mono: "JetBrains Mono", "IBM Plex Mono", ui-monospace, Consolas, monospace;
+    --sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  /* The UA rule for the hidden attribute is [hidden]{display:none}, which an ID
+     selector outranks. #overlay sets display:grid, so it stayed on screen while
+     hidden: a 94% opaque sheet over the canvas that also ate every pointer
+     event. Hence "the scene is dark and the orbit does nothing". */
+  [hidden] { display: none !important; }
+
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 13px;
+    overflow: hidden;
+  }
+
+  #app {
+    display: grid;
+    grid-template-columns: 1fr 350px;
+    height: 100%;
+  }
+
+  #stage { position: relative; min-width: 0; }
+  #view { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+  #view:active { cursor: grabbing; }
+
+  #hint {
+    position: absolute;
+    left: 16px;
+    bottom: 14px;
+    color: var(--muted);
+    font-size: 11px;
+    letter-spacing: .02em;
+    pointer-events: none;
+    text-shadow: 0 1px 3px rgba(0,0,0,.8);
+  }
+
+  #overlay {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    background: rgba(13,16,19,.94);
+    padding: 40px;
+    text-align: center;
+  }
+  #overlay-text { max-width: 44ch; line-height: 1.6; color: var(--bad); }
+  #hint, #overlay[hidden] { pointer-events: none; }
+
+  /* --- sidebar --- */
+  aside {
+    background: var(--panel);
+    border-left: 1px solid var(--line);
+    overflow-y: auto;
+    padding: 18px 18px 40px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  header h1 {
+    margin: 0 0 4px;
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -.01em;
+  }
+  header p { margin: 0; color: var(--muted); line-height: 1.5; font-size: 12px; }
+
+  section { display: flex; flex-direction: column; gap: 9px; }
+
+  h2 {
+    margin: 0;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .12em;
+    color: var(--muted);
+    font-weight: 600;
+    padding-bottom: 7px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+  }
+  .row span:first-child { color: var(--muted); }
+  .row span:last-child, .val {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    font-size: 12px;
+  }
+
+  label.control { display: flex; flex-direction: column; gap: 5px; }
+  label.control > span { color: var(--muted); font-size: 11px; }
+
+  input[type="range"] { width: 100%; accent-color: var(--accent); }
+
+  .readout {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--accent);
+  }
+  .readout + .sub { color: var(--muted); font-size: 11px; font-family: var(--mono); }
+
+  button {
+    font-family: var(--sans);
+    font-size: 12.5px;
+    font-weight: 600;
+    padding: 9px 12px;
+    border-radius: 4px;
+    border: 1px solid var(--accent);
+    background: rgba(78,201,176,.12);
+    color: var(--accent);
+    cursor: pointer;
+    transition: background .12s ease;
+  }
+  button:hover:not(:disabled) { background: rgba(78,201,176,.22); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.ghost { border-color: var(--line); background: transparent; color: var(--muted); font-weight: 500; }
+  button.ghost:hover { background: var(--panel-2); }
+
+  .choice { display: flex; flex-direction: column; gap: 7px; }
+  .choice label {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    padding: 8px 9px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--panel-2);
+    cursor: pointer;
+    line-height: 1.4;
+  }
+  .choice label:has(input:checked) { border-color: var(--accent); }
+  .choice input { margin: 2px 0 0; accent-color: var(--accent); }
+  .choice b { font-weight: 600; display: block; }
+  .choice em { font-style: normal; color: var(--muted); font-size: 11px; }
+
+  #precision-note {
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.5;
+    margin: 0;
+  }
+
+  .legend { display: flex; flex-direction: column; gap: 5px; }
+  .bar {
+    height: 9px;
+    border-radius: 2px;
+    background: linear-gradient(90deg, rgb(212,61,51) 0%, rgb(237,181,45) 50%, rgb(62,179,92) 100%);
+  }
+  .legend .ends {
+    display: flex;
+    justify-content: space-between;
+    color: var(--muted);
+    font-size: 10px;
+    font-family: var(--mono);
+  }
+
+  .note {
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.55;
+    margin: 0;
+    padding-left: 9px;
+    border-left: 2px solid var(--line);
+  }
+
+  @media (max-width: 900px) {
+    #app { grid-template-columns: 1fr; grid-template-rows: 55% 45%; }
+    aside { border-left: none; border-top: 1px solid var(--line); }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <canvas id="view"></canvas>
+    <div id="hint">Drag to orbit · scroll to zoom</div>
+    <div id="overlay" hidden><p id="overlay-text"></p></div>
+  </div>
+
+  <aside>
+    <header>
+      <h1>Annual shading sweep</h1>
+      <p>A year of sun occlusion for a flat-roof array, computed on the GPU. Every daylight hour of every month, nine sample points per module.</p>
+    </header>
+
+    <section>
+      <h2>Site</h2>
+      <div class="row"><span>Modules</span><span id="stat-panels">—</span></div>
+      <div class="row"><span>Array</span><span id="stat-array">—</span></div>
+      <div class="row"><span>Latitude</span><span>51.51° N</span></div>
+      <div class="row"><span>Tilt / row pitch</span><span>10° / 2.2 m</span></div>
+    </section>
+
+    <section>
+      <h2>Sun</h2>
+      <div class="readout" id="sun-label">—</div>
+      <div class="sub" id="sun-angles">—</div>
+      <label class="control">
+        <span>Month</span>
+        <input type="range" id="month" min="0" max="11" step="1">
+      </label>
+      <label class="control">
+        <span>Hour</span>
+        <input type="range" id="hour" min="0" max="23" step="1">
+      </label>
+    </section>
+
+    <section>
+      <h2>Analysis</h2>
+      <button id="run-sweep">Run annual sweep</button>
+      <div id="results" hidden>
+        <div class="row"><span>GPU time</span><span id="res-time">—</span></div>
+        <div class="row"><span>Daylight cells</span><span id="res-cells">—</span></div>
+        <div class="row"><span>Sample tests</span><span id="res-samples">—</span></div>
+        <div class="row"><span>Mean sun access</span><span id="res-mean">—</span></div>
+        <div class="row"><span>Worst / best module</span><span id="res-range">—</span></div>
+      </div>
+      <div class="legend">
+        <div class="bar"></div>
+        <div class="ends"><span id="legend-lo">0%</span><span>sun access</span><span id="legend-hi">100%</span></div>
+      </div>
+      <p class="note">Each module is tinted by its own three by three sample grid, so a module that is half shaded reads as half shaded rather than averaging the loss away.</p>
+      <button class="ghost" id="reset-results">Clear results</button>
+    </section>
+
+    <section>
+      <h2>Coordinate precision</h2>
+      <div class="choice">
+        <label>
+          <input type="radio" name="precision" value="relative" checked>
+          <span><b>Relative to render origin</b><em>Correct. The large subtraction happens on the CPU in float64.</em></span>
+        </label>
+        <label>
+          <input type="radio" name="precision" value="absolute">
+          <span><b>Absolute ECEF as float32</b><em>Wrong, and visibly so. Same shaders, one subtraction removed.</em></span>
+        </label>
+      </div>
+      <p id="precision-note">Vertices uploaded relative to the render origin. Offsets are tens of metres, where float32 resolves micrometres.</p>
+      <div class="row"><span>Render origin</span><span id="stat-origin">—</span></div>
+      <div class="row"><span>float32 step there</span><span id="stat-spacing">—</span></div>
+      <p class="note">WGSL has no 64-bit float type, so this cannot be fixed inside a shader. It has to be fixed before the upload.</p>
+    </section>
+
+    <section>
+      <h2>Device</h2>
+      <div class="row"><span>Adapter</span><span id="stat-adapter" style="max-width:200px">—</span></div>
+      <div class="row"><span>Shadow map</span><span>2048²  depth32float</span></div>
+      <div class="row"><span>Build</span><span id="stat-build">—</span></div>
+      <div class="row"><span>Frame rate</span><span id="stat-fps">—</span></div>
+    </section>
+  </aside>
+</div>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>

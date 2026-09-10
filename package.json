@@ -1,0 +1,11 @@
+{
+  "name": "webgpu-solar-sweep",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Annual solar shading analysis for a rooftop array, computed as a WebGPU render + compute pipeline in earth-centred coordinates.",
+  "scripts": {
+    "start": "node devserver.js 8099",
+    "selftest": "node devserver.js 8099"
+  },
+  "license": "MIT"
+}
